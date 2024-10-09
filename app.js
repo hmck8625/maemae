@@ -1,3 +1,6 @@
+import * as THREE from 'three';
+import { HandLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
+
 let video, handLandmarker, scene, camera, renderer, decoration;
 
 async function setupCamera() {
@@ -12,18 +15,17 @@ async function setupCamera() {
 }
 
 async function loadHandLandmarker() {
-    const hands = new Hands({locateFile: (file) => {
-        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-    }});
-    hands.setOptions({
-        maxNumHands: 1,
-        modelComplexity: 1,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5
+    const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+    );
+    handLandmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+            delegate: "GPU"
+        },
+        runningMode: "VIDEO",
+        numHands: 1
     });
-    hands.onResults(onResults);
-
-    handLandmarker = hands;
 }
 
 function setupThreeJS() {
@@ -32,7 +34,6 @@ function setupThreeJS() {
     renderer = new THREE.WebGLRenderer({canvas: document.getElementById('output')});
     renderer.setSize(window.innerWidth, window.innerHeight);
 
-    // 手の装飾用の3Dオブジェクトを作成
     const geometry = new THREE.SphereGeometry(0.1, 32, 32);
     const material = new THREE.MeshBasicMaterial({color: 0xff0000});
     decoration = new THREE.Mesh(geometry, material);
@@ -42,18 +43,14 @@ function setupThreeJS() {
 }
 
 function onResults(results) {
-    if (results.multiHandLandmarks) {
-        for (const landmarks of results.multiHandLandmarks) {
-            // 手の中心（手首）の位置を取得
-            const wrist = landmarks[0];
-            // Three.jsの座標系に変換
-            const x = (wrist.x - 0.5) * 5;
-            const y = -(wrist.y - 0.5) * 5;
-            const z = -wrist.z * 5;
+    if (results.landmarks && results.landmarks.length > 0) {
+        const landmarks = results.landmarks[0];
+        const wrist = landmarks[0];
+        const x = (wrist.x - 0.5) * 5;
+        const y = -(wrist.y - 0.5) * 5;
+        const z = -wrist.z * 5;
 
-            // 装飾の位置を更新
-            decoration.position.set(x, y, z);
-        }
+        decoration.position.set(x, y, z);
     }
     renderer.render(scene, camera);
 }
@@ -64,14 +61,19 @@ async function app() {
     setupThreeJS();
 
     video.play();
-    video.addEventListener('loadeddata', async () => {
-        await handLandmarker.send({image: video});
-    });
 
     async function detectionLoop() {
-        await handLandmarker.send({image: video});
+        if (!handLandmarker || !video.videoWidth) {
+            requestAnimationFrame(detectionLoop);
+            return;
+        }
+
+        let startTimeMs = performance.now();
+        const results = handLandmarker.detectForVideo(video, startTimeMs);
+        onResults(results);
         requestAnimationFrame(detectionLoop);
     }
+
     detectionLoop();
 }
 
